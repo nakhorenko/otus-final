@@ -1,0 +1,189 @@
+---
+- name: DynamicWeb and Monitoring server
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+
+  - name: Install packages
+    become: true
+    ansible.builtin.apt:
+      name: "{{ item }}"
+      state: present
+      update_cache: true
+    loop:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - software-properties-common
+      - mc
+      - nano
+      - net-tools
+    tags:
+      - docker
+
+  - name: Add Docker official GPG key
+    become: true
+    ansible.builtin.apt_key:
+      url: https://download.docker.com/linux/ubuntu/gpg
+      state: present
+    tags:
+      - docker
+
+  - name: Verify that we have the key with the fingerprint
+    become: true
+    ansible.builtin.apt_key:
+      id: 0EBFCD88
+      state: present
+    tags:
+      - docker
+
+  - name: Set up the stable repository
+    become: true
+    ansible.builtin.apt_repository:
+      repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu xenial stable
+      state: present
+      update_cache: true
+    tags:
+      - docker
+
+  - name: Update apt packages
+    become: true
+    ansible.builtin.apt:
+      update_cache: true
+    tags:
+      - docker
+
+  - name: Install docker
+    become: true
+    ansible.builtin.apt:
+      name: docker-ce
+      state: present
+      update_cache: true
+    tags:
+      - docker
+
+  - name: Add remote "vagrant" user to "docker" group # добавляем пользователя vagrant к группе безопасности docker
+    become: true
+    ansible.builtin.user:
+      name: vagrant
+      group: "docker"
+      append: true
+    tags:
+      - docker
+
+  - name: Install docker-compose
+    become: true
+    ansible.builtin.get_url:
+      url: https://github.com/docker/compose/releases/download/1.25.1-rc1/docker-compose-Linux-x86_64
+      dest: /usr/local/bin/docker-compose
+      mode: 0777
+
+  - name: Copy project # Копируем проект с хост машины в созданный каталог через vagrant
+    ansible.builtin.copy:
+      src: project
+      dest: /home/vagrant
+      mode: 0777
+
+  - name: reset ssh connection # чтобы применились права на использование docker, необходимо перелогиниться
+    meta: reset_connection
+
+  - name: DynamicWeb CONFIGURE
+    block:
+
+      - name: START DynamicWeb CONTAINER
+        shell:
+          cmd: "docker-compose -f docker-compose.yml up -d"
+          chdir: /home/vagrant/project
+
+      - name: Run replication MySQL
+        shell:
+          cmd: "bash ./travis-ci/create_gr.sh"
+          chdir: /home/vagrant/project
+
+      - name: Stop UFW
+        ansible.builtin.service:
+          name: ufw
+          state: stopped
+          enabled: false
+
+      - name: Check if iptables installed
+        become: true
+        ansible.builtin.apt:
+          name: iptables
+          state: present
+          update_cache: true
+        tags:
+          - iptables
+
+      - name: Install iptables-persistent # утилита для сохранения правил iptables 
+        become: true
+        ansible.builtin.apt:
+          name: iptables-persistent
+          state: present
+          update_cache: true
+        tags:
+          - iptables-persistent
+
+      - name: Enable iptables
+        ansible.builtin.service:
+          name: iptables
+          state: started
+          enabled: true
+
+      - name: restricts all external connections except 10.0.2.2
+        become: true
+        shell: iptables -I DOCKER-USER -i eth0 ! -s 10.0.2.2 -j DROP
+
+      - name: reload iptables
+        become: true
+        shell: iptables-save > /etc/iptables/rules.v4
+
+      - name: Changing script permissions
+        ansible.builtin.file:
+          path: /home/vagrant/project/dumpSQL.sh
+          mode: a+x
+
+      - name: Create path for cron # добавляем необходимые для выполнения скрипта создания дампа БД пути в переменную окружения PATH для демона cron
+        ansible.builtin.cron:
+          name: PATH
+          env: true
+          job: /usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+      - name: Create cronjob # помещаем скрипт создания дампа БД в cron (дамп будет создаваться ежедневно в 3 ночи с Slave сервера)
+        ansible.builtin.cron:
+          name: "dumpSQL"
+          state: present
+          minute: "0"
+          hour: "3"
+          day: "*"
+          month: "*"
+          weekday: "*"
+          job: '/home/vagrant/project/dumpSQL.sh'
+
+    when: (ansible_hostname == "DynamicWeb")
+
+  - name: Monitoring CONFIGURE # конфигурируем node Grafana
+    block:
+
+      - name: START Monitoring CONTAINER
+        shell:
+          cmd: "docker-compose -f docker-compose.yml up -d"
+          chdir: /home/vagrant/project/prometheus
+
+      - name: template rsyslog.conf # configure rsyslog
+        ansible.builtin.copy:
+          src: ./project/nginx-conf/rsyslog.conf
+          dest: /etc/rsyslog.conf
+        notify: restart rsyslog
+
+    when: (ansible_hostname == "Grafana")
+
+  handlers:
+
+    - name: restart rsyslog
+      become: true
+      ansible.builtin.systemd:
+        service: rsyslog
+        state: restarted
+        enabled: true

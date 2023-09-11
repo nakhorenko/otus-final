@@ -1,0 +1,11 @@
+groups: 
+- name: NodeOffline
+  rules:
+  - alert: PrometheusTargetMissing
+    expr: up == 0
+    for: 0m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Node is not working (instance {{ $labels.instance }})"
+      description: "A Prometheus target has disappeared. An exporter might be crashed. VALUE = {{ $value }}  LABELS: {{ $labels }}"
