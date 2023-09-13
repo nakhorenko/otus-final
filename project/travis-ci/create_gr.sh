@@ -2,7 +2,7 @@
 docker stop wordpress
 sleep 30
 docker-compose exec database mysql -uroot -pqwerty123 \
-  -e "CREATE USER 'wpuser'@'%' IDENTIFIED BY 'wppassword';" \
+  -e "CREATE USER 'wpuser'@'%' IDENTIFIED BY 'qwerty123 ';" \
   -e "GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'%' WITH GRANT OPTION;" \
   -e "SET @@GLOBAL.group_replication_bootstrap_group=1;" \
   -e "create user 'repl'@'%';" \
